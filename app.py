@@ -4,78 +4,59 @@ from docx import Document
 import io
 import re
 
-# অনলাইন ইন্টারফেস
-st.set_page_config(page_title="Online CDR Expert", layout="wide")
-st.title("🌐 Online CDR/Word Analyzer")
-st.info("A Party অনুযায়ী গ্রুপিং রুলস এখানে সেট করা আছে।")
+st.set_page_config(page_title="Investigator Pro", layout="wide")
+st.title("🕵️ CDR & FB-Name Finder")
 
-uploaded_file = st.file_uploader("Upload Word/Txt File", type=["docx", "txt"])
+# ফাইল আপলোড (Word, Excel, Txt)
+uploaded_file = st.file_uploader("Upload CDR File", type=["docx", "txt", "xlsx"])
 
-def extract_data(text):
-    # Regex Parser for your specific file format
-    # MSISDN (A Party), B Party, Location, Date_time, IMEI
-    pattern = r"MSISDN:\s*(\d+).*?B Party:\s*(\w+).*?location:\s*(.*?)\s*LAC ID:.*?Date_time:\s*(\d{14}).*?(IMEI:.*?)\["
+def parse_txt(text):
+    # Regex to find: MSISDN, B Party, Location, Date_time, IMEI
+    pattern = r"MSISDN:\s*(\d+).*?B Party:\s*(\w+).*?location:\s*(.*?)\s*Date_time:\s*(\d{14}).*?(IMEI:.*?)\["
     matches = re.findall(pattern, text, re.DOTALL)
-    
-    data_list = []
-    for m in matches:
-        # Formatting Date_time
-        raw_dt = m[3]
-        formatted_dt = f"{raw_dt[:4]}-{raw_dt[4:6]}-{raw_dt[6:8]} {raw_dt[8:10]}:{raw_dt[10:12]}:{raw_dt[12:]}"
-        
-        data_list.append({
-            'A_Party': m[0],
-            'Date_Time': formatted_dt,
-            'B_Party_Loc': f"{m[1]} / {m[2]}",
-            'Rest': m[4].strip()
-        })
-    return data_list
+    return [{'Date_Time': m[3], 'A_Party': m[0], 'B_Party_Loc': f"{m[1]} / {m[2]}", 'Rest': m[4].strip()} for m in matches]
 
 if uploaded_file:
-    # ফাইল রিড করা
-    if uploaded_file.name.endswith('.docx'):
-        doc = Document(uploaded_file)
-        full_text = "\n".join([p.text for p in doc.paragraphs])
-    else:
-        full_text = uploaded_file.read().decode('utf-8')
+    try:
+        if uploaded_file.name.endswith('.xlsx'):
+            df = pd.read_excel(uploaded_file)
+        elif uploaded_file.name.endswith('.docx'):
+            doc = Document(uploaded_file)
+            txt = "\n".join([p.text for p in doc.paragraphs])
+            df = pd.DataFrame(parse_txt(txt))
+        else:
+            txt = uploaded_file.read().decode('utf-8')
+            df = pd.DataFrame(parse_txt(txt))
 
-    results = extract_data(full_text)
-    
-    if results:
-        df = pd.DataFrame(results)
-        st.success(f"মোট {len(df)} টি রেকর্ড পাওয়া গেছে।")
-        
-        # অনলাইন ভিউ
-        st.dataframe(df)
+        if not df.empty:
+            st.success("✅ Data Loaded!")
 
-        # Word ফাইল জেনারেশন (Output Rules: A1=Date, B2=A, C3=B/Loc, C4=Rest)
-        if st.button("Download Analysis Report"):
-            out_doc = Document()
-            out_doc.add_heading('CDR Grouped Report', 0)
+            # --- Target OSINT (FB & Name Finder) ---
+            st.subheader("🔍 Find Name & FB ID")
+            nums = df['A_Party'].unique() if 'A_Party' in df.columns else df.iloc[:,0].unique()
+            target = st.selectbox("Select Number", nums)
+            
+            c1, c2, c3 = st.columns(3)
+            with c1: st.link_button("🔵 Facebook Search", f"https://www.facebook.com/search/top/?q={target}")
+            with c2: st.link_button("📞 Truecaller (Name)", f"https://www.truecaller.com/search/bd/{target}")
+            with c3: st.link_button("🌐 Google Search", f"https://www.google.com/search?q={target}")
 
-            # Grouping by A Party
-            for a_num, group in df.groupby('A_Party'):
-                out_doc.add_heading(f'A Party: {a_num}', level=1)
-                table = out_doc.add_table(rows=1, cols=4)
-                table.style = 'Table Grid'
-                
-                # Header row
-                hdr = table.rows[0].cells
-                hdr[0].text = 'Date & Time (A1)'
-                hdr[1].text = 'A Party (B2)'
-                hdr[2].text = 'B Party/Location (C3)'
-                hdr[3].text = 'Rest (C4)'
+            # --- Table Display ---
+            st.dataframe(df, use_container_width=True)
 
-                for _, row in group.iterrows():
-                    cells = table.add_row().cells
-                    cells[0].text = row['Date_Time']
-                    cells[1].text = row['A_Party']
-                    cells[2].text = row['B_Party_Loc']
-                    cells[3].text = row['Rest']
-
-            # মেমোরিতে ফাইল সেভ করে ডাউনলোড অপশন দেওয়া
-            bio = io.BytesIO()
-            out_doc.save(bio)
-            st.download_button("📥 Download Word File", bio.getvalue(), "Analyzed_Report.docx")
-    else:
-        st.warning("ফাইল ফরম্যাট মেলেনি। সঠিক CDR ফাইল আপলোড করুন।")
+            # --- Word Report ---
+            if st.button("📥 Download Grouped Word Report"):
+                out_doc = Document()
+                for a_num, group in df.groupby(df.columns[1] if len(df.columns)>1 else df.columns[0]):
+                    out_doc.add_heading(f'A Party: {a_num}', level=1)
+                    table = out_doc.add_table(rows=1, cols=len(df.columns))
+                    table.style = 'Table Grid'
+                    for i, col in enumerate(df.columns): table.rows[0].cells[i].text = str(col)
+                    for _, row in group.iterrows():
+                        r_cells = table.add_row().cells
+                        for i, v in enumerate(row): r_cells[i].text = str(v)
+                bio = io.BytesIO()
+                out_doc.save(bio)
+                st.download_button("Download File", bio.getvalue(), "Investigator_Report.docx")
+    except Exception as e:
+        st.error(f"Error: {e}")
